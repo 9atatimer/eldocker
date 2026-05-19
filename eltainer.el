@@ -142,38 +142,91 @@ Honors `k8s-context-override' over the file's `current-context'."
       (when (string-prefix-p "*k8s:" (buffer-name buf))
         (ignore-errors (kill-buffer buf))))))
 
+(defun eltainer--apply-context-switch (file ctx)
+  "Commit a switch to (FILE, CTX): set the vars, kill k8s buffers,
+refresh the dashboard, log to the echo area."
+  (setq k8s-kubeconfig-path file
+        k8s-context-override ctx)
+  (eltainer--kill-k8s-buffers)
+  (when (get-buffer "*eltainer*")
+    (with-current-buffer "*eltainer*" (eltainer-refresh)))
+  (message "eltainer: switched to %s (%s)"
+           ctx (abbreviate-file-name file)))
+
+;;; --- Context picker buffer ------------------------------------------------
+;;
+;; `b' pops `*eltainer:contexts*' showing every discovered context up
+;; front (no tab-to-expand) — RET on a row commits the switch.
+
+(defvar-keymap eltainer-context-picker-mode-map
+  :parent special-mode-map
+  "RET" #'eltainer-context-pick
+  "n"   #'next-line
+  "p"   #'previous-line
+  "j"   #'next-line
+  "k"   #'previous-line
+  "q"   #'quit-window)
+
+(define-derived-mode eltainer-context-picker-mode special-mode "Eltainer:Context"
+  "Picker buffer listing every kubeconfig context for `b' switching."
+  :group 'eltainer
+  (setq-local truncate-lines t))
+
+(defun eltainer-context-pick ()
+  "Select the context on the current line and apply the switch."
+  (interactive)
+  (let ((target (get-text-property (line-beginning-position) 'eltainer-context)))
+    (unless target (user-error "Not on a context line"))
+    (quit-window t)
+    (eltainer--apply-context-switch (car target) (cdr target))))
+
 (defun eltainer-switch-kubeconfig ()
-  "Switch the active k8s context and refresh the dashboard.
-Like magit's branch switch (`b'), but for clusters.  Enumerates every
-context across every discovered kubeconfig file; selecting one sets
-`k8s-kubeconfig-path' and `k8s-context-override' and kills any open
-`*k8s:…*' buffers so they re-open against the new context."
+  "Open a picker listing every discovered context.
+Like magit's branch switch (`b'), but for kubeconfig contexts.  The
+list appears immediately; navigate with n/p (or j/k), RET to select,
+q to cancel."
   (interactive)
   (let* ((current-path (eltainer--current-kubeconfig))
          (current-ctx (eltainer--current-context current-path))
-         (candidates (eltainer--discover-kubeconfigs))
-         (annotated
-          (mapcar (lambda (pair)
-                    (let* ((file (car pair))
-                           (ctx (cdr pair))
-                           (label (format "%s — %s%s"
-                                          ctx
-                                          (abbreviate-file-name file)
-                                          (if (and (equal file current-path)
-                                                   (equal ctx current-ctx))
-                                              "  *current*" ""))))
-                      (cons label pair)))
-                  candidates))
-         (choice (completing-read "Switch context: " annotated nil t))
-         (target (cdr (assoc choice annotated))))
-    (unless target (user-error "No context selected"))
-    (setq k8s-kubeconfig-path (car target)
-          k8s-context-override (cdr target))
-    (eltainer--kill-k8s-buffers)
-    (when (get-buffer "*eltainer*")
-      (with-current-buffer "*eltainer*" (eltainer-refresh)))
-    (message "eltainer: switched to %s (%s)"
-             (cdr target) (abbreviate-file-name (car target)))))
+         (candidates (eltainer--discover-kubeconfigs)))
+    (unless candidates
+      (user-error "No kubeconfigs found (set k8s-kubeconfig-path or $KUBECONFIG)"))
+    (let ((buf (get-buffer-create "*eltainer:contexts*"))
+          (current-line 1))
+      (with-current-buffer buf
+        (eltainer-context-picker-mode)
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (propertize "Switch context" 'font-lock-face
+                              'eltainer-section-heading))
+          (insert (propertize "    RET select  n/p move  q cancel\n\n"
+                              'font-lock-face 'eltainer-dim))
+          (cl-loop for (file . ctx) in candidates
+                   for line from 3
+                   for is-current = (and (equal file current-path)
+                                         (equal ctx current-ctx))
+                   do
+                   (when is-current (setq current-line line))
+                   (let ((start (point)))
+                     (insert "  "
+                             (propertize ctx 'font-lock-face
+                                         'eltainer-resource-name)
+                             "  —  "
+                             (propertize (abbreviate-file-name file)
+                                         'font-lock-face
+                                         'eltainer-resource-secondary)
+                             (if is-current
+                                 (propertize "  *current*" 'font-lock-face
+                                             'eltainer-dim)
+                               "")
+                             "\n")
+                     (add-text-properties
+                      start (point)
+                      `(eltainer-context (,file . ,ctx))))))
+        (goto-char (point-min))
+        (forward-line (1- current-line)))
+      (pop-to-buffer buf '((display-buffer-below-selected)
+                           (window-height . fit-window-to-buffer))))))
 
 (define-derived-mode eltainer-mode magit-section-mode "Eltainer"
   "Dashboard for the unified docker + k8s frontend."
@@ -182,13 +235,45 @@ context across every discovered kubeconfig file; selecting one sets
   (setq-local revert-buffer-function
               (lambda (_ignore-auto _noconfirm) (eltainer-refresh))))
 
+(defun eltainer--current-group-name ()
+  "Return the dashboard backend label (\"Docker\"/\"Kubernetes\") for point,
+or nil if point isn't inside any backend section."
+  (let ((sec (magit-current-section))
+        (groups (mapcar #'car eltainer-views)))
+    (while (and sec (not (member (oref sec value) groups)))
+      (setq sec (and (slot-boundp sec 'parent) (oref sec parent))))
+    (and sec (oref sec value))))
+
+(defun eltainer--launch-key (key)
+  "Fire the launcher for KEY in whichever backend section point is in.
+If point isn't inside any backend section, the key is ambiguous and we
+fire the first match across all backends (lets the user act on the
+buffer-as-a-whole when not yet on a row)."
+  (let* ((group (eltainer--current-group-name))
+         (entries (if group
+                      (cdr (assoc group eltainer-views))
+                    (apply #'append (mapcar #'cdr eltainer-views))))
+         (entry (cl-find key entries :key #'car :test #'string=)))
+    (cond
+     (entry (call-interactively (nth 2 entry)))
+     (group
+      (user-error "%s has no action in the %s section" key group))
+     (t
+      (user-error "%s is not bound" key)))))
+
 (defun eltainer--bind-launchers ()
-  "Wire each entry's KEY to its COMMAND in the current buffer."
-  (dolist (group eltainer-views)
-    (dolist (entry (cdr group))
-      (let ((key (nth 0 entry))
-            (cmd (nth 2 entry)))
-        (keymap-set eltainer-mode-map key cmd)))))
+  "Wire each entry's KEY to a section-aware launcher.
+Same key reused across backends is fine — the launcher checks which
+section point is in and dispatches accordingly."
+  (let ((seen nil))
+    (dolist (group eltainer-views)
+      (dolist (entry (cdr group))
+        (let ((key (nth 0 entry)))
+          (unless (member key seen)
+            (push key seen)
+            (keymap-set eltainer-mode-map key
+                        (let ((k key))
+                          (lambda () (interactive) (eltainer--launch-key k))))))))))
 
 (defun eltainer--insert-entry (entry)
   "Insert one dashboard row for ENTRY (KEY LABEL COMMAND)."
@@ -233,10 +318,6 @@ context across every discovered kubeconfig file; selecting one sets
     (magit-insert-section (eltainer-root)
       (insert (propertize "eltainer" 'font-lock-face 'eltainer-section-heading)
               " — unified container porcelain\n\n")
-      (insert (propertize "Press the key beside an entry, or RET on a row.\n"
-                          'font-lock-face 'eltainer-dim))
-      (insert (propertize "g refreshes, q quits.\n\n"
-                          'font-lock-face 'eltainer-dim))
       (dolist (group eltainer-views)
         (magit-insert-section (eltainer-group (car group))
           (magit-insert-heading

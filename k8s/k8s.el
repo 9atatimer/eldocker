@@ -431,9 +431,15 @@ k8s-themed heading face."
   "i" #'k8s-describe
   "w" #'k8s-watch-toggle
   "N" #'k8s-set-namespace
+  "b" #'eltainer-switch-kubeconfig
   "?" #'k8s-dispatch
   "g" #'revert-buffer
   "q" #'quit-window)
+
+;; `eltainer-switch-kubeconfig' lives in the top-level eltainer.el so
+;; both the dashboard and the k8s views can call it.  Autoload so we
+;; don't force `(require 'eltainer)' from k8s.el (that'd circle back).
+(autoload 'eltainer-switch-kubeconfig "eltainer" nil t)
 
 (defun k8s-dwim-ret ()
   "Smart RET: if on a header field, activate it; otherwise toggle section."
@@ -661,6 +667,8 @@ LINE-FN inserts one item."
     ("i" "Ingresses"    k8s-ingresses)
     ("m" "ConfigMaps"   k8s-configmaps)
     ("x" "Secrets"      k8s-secrets)]]
+  ["Cluster"
+   ("b" "Switch context" eltainer-switch-kubeconfig)]
   ["Filter"
    ("N" "Namespace"     k8s-set-namespace)]
   ["Navigate"
