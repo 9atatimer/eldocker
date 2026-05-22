@@ -50,6 +50,9 @@ If nil, uses $KUBECONFIG or ~/.kube/config."
 (defvar-local k8s--watch-debounce-timer nil
   "Timer for coalescing rapid watch events into a single re-render.")
 
+(defvar-local k8s--watch-starting nil
+  "Non-nil while a watch start is in progress.")
+
 (defvar-local k8s--api-path-fn nil
   "Function that returns the API list path for this view.
 Called with one optional arg (namespace), returns a path string.")
@@ -355,6 +358,10 @@ k8s-themed heading face."
   "RET"       #'k8s-switch-resource
   "<mouse-1>" #'k8s-switch-resource)
 
+(defvar-keymap k8s--cluster-header-map
+  "RET"       #'eltainer-switch-kubeconfig
+  "<mouse-1>" #'eltainer-switch-kubeconfig)
+
 (defvar-keymap k8s--namespace-header-map
   "RET"       #'k8s-set-namespace
   "<mouse-1>" #'k8s-set-namespace)
@@ -367,9 +374,15 @@ k8s-themed heading face."
   (let* ((conn (k8s--ensure-connection))
          (host (k8s-connection-host conn))
          (port (k8s-connection-port conn))
-         (user (k8s-user-name (k8s-connection-user conn))))
+         (user (k8s-user-name (k8s-connection-user conn)))
+         (ctx (eltainer--current-context)))
     (insert (propertize "Cluster:   " 'font-lock-face 'k8s-dim)
-            (format "%s:%d" host port)
+            (propertize (or ctx (format "%s:%d" host port))
+                        'font-lock-face 'k8s-resource-name
+                        'k8s-field 'cluster
+                        'keymap k8s--cluster-header-map
+                        'mouse-face 'highlight
+                        'help-echo "RET: switch cluster")
             "\n")
     (insert (propertize "User:      " 'font-lock-face 'k8s-dim)
             user
@@ -440,6 +453,7 @@ k8s-themed heading face."
 ;; both the dashboard and the k8s views can call it.  Autoload so we
 ;; don't force `(require 'eltainer)' from k8s.el (that'd circle back).
 (autoload 'eltainer-switch-kubeconfig "eltainer" nil t)
+(autoload 'eltainer--current-context "eltainer" nil nil)
 
 (defun k8s-dwim-ret ()
   "Smart RET: if on a header field, activate it; otherwise toggle section."
@@ -448,6 +462,8 @@ k8s-themed heading face."
     (cond
      ((eq field 'resource)
       (call-interactively #'k8s-switch-resource))
+     ((eq field 'cluster)
+      (call-interactively #'eltainer-switch-kubeconfig))
      ((eq field 'namespace)
       (call-interactively #'k8s-set-namespace))
      (t
@@ -492,9 +508,6 @@ TYPE is \"ADDED\", \"MODIFIED\", \"DELETED\", or \"BOOKMARK\"."
     (when (and saved-win-start (get-buffer-window))
       (set-window-start (get-buffer-window)
                         (min saved-win-start (point-max))))))
-
-(defvar-local k8s--watch-starting nil
-  "Non-nil while a watch start is in progress.")
 
 (defun k8s-watch-toggle ()
   "Toggle watch mode for the current resource view."
@@ -779,7 +792,7 @@ LINE-FN inserts one item."
       (magit-insert-heading
         (format "  %-42s %-10s %-10s %-6s %s\n"
                 (propertize name 'font-lock-face 'k8s-resource-name)
-                (format "%d/%d" ready desired)
+                (format "%d/%d" ready replicas)
                 (propertize (format "%d" available) 'font-lock-face 'k8s-dim)
                 (propertize age 'font-lock-face 'k8s-dim)
                 (propertize image 'font-lock-face 'k8s-dim)))

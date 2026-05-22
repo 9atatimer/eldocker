@@ -197,7 +197,7 @@ q to cancel."
         (eltainer-context-picker-mode)
         (let ((inhibit-read-only t))
           (erase-buffer)
-          (insert (propertize "Switch context" 'font-lock-face
+          (insert (propertize "Switch cluster" 'font-lock-face
                               'eltainer-section-heading))
           (insert (propertize "    RET select  n/p move  q cancel\n\n"
                               'font-lock-face 'eltainer-dim))
@@ -265,18 +265,20 @@ q to cancel."
                              '(help-echo "command unavailable (module not loaded)"))))))
 
 (defun eltainer--insert-active-kubeconfig ()
-  "Render the active k8s context + kubeconfig and a `b' switch hint."
+  "Render the active k8s cluster row with a `b' shortcut."
   (let* ((path (eltainer--current-kubeconfig))
-         (ctx (eltainer--current-context path)))
-    (insert (propertize "  Context:  " 'font-lock-face 'eltainer-dim))
-    (if ctx
-        (insert (propertize ctx 'font-lock-face 'eltainer-resource-name))
-      (insert (propertize "(unset)" 'font-lock-face 'eltainer-dim)))
-    (when path
-      (insert (propertize (format "  —  %s" (abbreviate-file-name path))
-                          'font-lock-face 'eltainer-resource-secondary)))
-    (insert (propertize "    [b] switch\n"
-                        'font-lock-face 'eltainer-dim))))
+         (ctx (eltainer--current-context path))
+         (label (if ctx (format "Cluster [%s]" ctx) "Cluster (unset)"))
+         (start (point)))
+    (magit-insert-section (eltainer-entry 'eltainer-switch-kubeconfig t)
+      (insert "  "
+              (propertize "b  " 'font-lock-face 'eltainer-resource-name)
+              (propertize label 'font-lock-face 'default))
+      (when path
+        (insert (propertize (format "  —  %s" (abbreviate-file-name path))
+                            'font-lock-face 'eltainer-resource-secondary)))
+      (insert "\n")
+      (add-text-properties start (point) `(eltainer-cmd eltainer-switch-kubeconfig)))))
 
 (defun eltainer-refresh ()
   "(Re)render the dashboard buffer."
@@ -290,10 +292,10 @@ q to cancel."
         (magit-insert-section (eltainer-group (car group))
           (magit-insert-heading
             (propertize (car group) 'font-lock-face 'eltainer-section-heading))
-          (when (equal (car group) "Kubernetes")
-            (eltainer--insert-active-kubeconfig))
           (dolist (entry (cdr group))
             (eltainer--insert-entry entry))
+          (when (equal (car group) "Kubernetes")
+            (eltainer--insert-active-kubeconfig))
           (insert "\n")))
       (insert "\n"))
     (let ((magit-section-cache-visibility nil))
