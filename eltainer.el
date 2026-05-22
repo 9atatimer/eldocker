@@ -265,7 +265,7 @@ q to cancel."
                              '(help-echo "command unavailable (module not loaded)"))))))
 
 (defun eltainer--insert-active-kubeconfig ()
-  "Render the active k8s context row and kubeconfig path with a `b' shortcut."
+  "Render the active k8s context + kubeconfig and a `b' switch hint."
   (let* ((path (eltainer--current-kubeconfig))
          (ctx (eltainer--current-context path))
          (label (if ctx (format "Context [%s]" ctx) "Context (unset)"))
